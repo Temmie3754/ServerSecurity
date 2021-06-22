@@ -24,6 +24,7 @@ from discord_slash.model import SlashCommandPermissionType
 from discord_slash.utils.manage_commands import create_option
 from discord_components import DiscordComponents, Button, ButtonStyle, InteractionType
 import ast
+import gzip
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -55,6 +56,23 @@ async def hourloop():
 guild_ids = []
 
 
+async def fullchannelrestore(ctx):
+    webhooks = []
+    for i in range(10):
+        webhooks.append(await ctx.channel.create_webhook(name="RestoreBot " + str(i + 1)))
+    x = 0
+    if os.path.exists('serverbackups/' + str(ctx.guild.id) + "/" + str(ctx.channel.id) + "/full.gz"):
+        with gzip.open('serverbackups/' + str(ctx.guild.id) + "/" + str(ctx.channel.id) + "/full.gz", "rt") as f:
+            data = ast.literal_eval(f.read())
+        for message in data:
+            webhooks[x].send(content=message['content'] + "\n" + message['attachments'], username=message['name'],
+                             avatar=message['pfp'], embed=message['embed'])
+            x += 1
+            if x == 10:
+                x = 0
+
+
+
 @bot.event
 async def on_ready():
     global guild_ids, imagechannel
@@ -81,6 +99,7 @@ async def on_guild_channel_delete(channel):
             row = c.fetchone()
             if userdict[str(entry.user.id)]['delchannel'] >= row[2]:
                 await entry.user.edit(roles=[])
+
 
 
 @bot.event
@@ -185,28 +204,40 @@ async def fullserverbackup(guild):
     for channel in guild.text_channels:
         if not os.path.exists('serverbackups/' + str(guild.id) + "/" + str(channel.id)):
             os.mkdir('serverbackups/' + str(guild.id) + "/" + str(channel.id))
-        if os.path.exists('serverbackups/' + str(guild.id) + "/" + str(channel.id) + "/full.txt"):
-            with open('serverbackups/' + str(guild.id) + "/" + str(channel.id) + "/full.txt", "w+",
-                      encoding="utf-8") as f:
-                date = str(f.readline())
-                data = ast.literal_eval(f.readline())
+        if os.path.exists('serverbackups/' + str(guild.id) + "/" + str(channel.id) + "/full.gz"):
+            with gzip.open('serverbackups/' + str(guild.id) + "/" + str(channel.id) + "/full.gz", "rt") as f:
+                data = ast.literal_eval(f.read()).reverse()
+                lmsg = data[-1]
+                date = lmsg['time']
                 async for message in channel.history(after=datetime.datetime.strptime(date, '%Y-%m-%d %X.%f')):
                     tosend = ""
                     embed = ""
+                    pfp = ""
+                    try:
+                        pfp = "https://cdn.discordapp.com/avatars/" + str(
+                            message.author.id) + message.author.avatar + ".webp"
+                    except Exception:
+                        pass
                     if message.embeds:
                         embed = message.embeds[0].to_dict
 
                     for attachment in message.attachments:
                         tosend += attachment.proxy_url
-                    data.append({'name': message.author.name, 'pfp': "https://cdn.discordapp.com/avatars/" + str(
-                        message.author.id) + message.author.avatar + ".webp", 'content': message.content,
-                                    'embed': embed,
-                                    'attachments': tosend})
+                    data.append({'name': message.author.name, 'pfp': pfp, 'content': message.content,
+                                 'embed': embed, 'attachments': tosend, "time": str(message.created_at)})
+            with gzip.open('serverbackups/' + str(guild.id) + "/" + str(channel.id) + "file.txt.gz", "wb") as f:
+                f.write(str(data).encode("utf-8"))
         else:
             towrite = []
-            async for message in channel.history(limit=99999999):
+            async for message in channel.history(oldest_first=True):
                 tosend = ""
                 embed = ""
+                pfp = ""
+                try:
+                    pfp = "https://cdn.discordapp.com/avatars/" + str(
+                        message.author.id) + message.author.avatar + ".webp"
+                except Exception:
+                    pass
                 if message.embeds:
                     embed = message.embeds[0].to_dict
                 '''for attachment in message.attachments:
@@ -219,20 +250,23 @@ async def fullserverbackup(guild):
                         tosend = msg2.attachments[0].url'''
                 for attachment in message.attachments:
                     tosend += attachment.proxy_url
-                towrite.append({'name': message.author.name, 'pfp': "https://cdn.discordapp.com/avatars/" + str(
-                    message.author.id) + message.author.avatar + ".webp", 'content': message.content, 'embed': embed,
-                                'attachments': tosend})
-            with open('serverbackups/' + str(guild.id) + "/" + str(channel.id) + "/full.txt", "w+",
-                      encoding="utf-8") as f:
-                f.write(str(datetime.datetime.now()) + "\n" + str(towrite))
+                try:
+                    towrite.append({'name': message.author.name, 'pfp': pfp, 'content': message.content, 'embed': embed,
+                                    'attachments': tosend, "time": str(message.created_at)})
+                except:
+                    print(message.content)
+            with gzip.open('serverbackups/' + str(guild.id) + "/" + str(channel.id) + "/full.gz", "wb") as f:
+                f.write(str(towrite).encode("utf-8"))
 
 
 # @slash.slash(name='serverbackup', description='performs backup of the server', guild_ids=guild_ids)
 @bot.command()
 async def serverbackup(ctx):
-    ctx.send("Started at " + str(datetime.datetime.utcnow()))
+    if ctx.message.author.id != ctx.message.guild.owner.id:
+        return
+    await ctx.send("Started at " + str(datetime.datetime.utcnow()))
     await fullserverbackup(ctx.guild)
-    ctx.send("Finished at " + str(datetime.datetime.utcnow()))
+    await ctx.send("Finished at " + str(datetime.datetime.utcnow()))
 
 
 @slash.slash(name='setmodchannel', description='Sets the mod channel for bot actions to the current channel')
@@ -337,7 +371,7 @@ async def on_button_click(interaction):
                         autorestore = 0
                     newEmbed = discord.Embed.from_dict(embed_dict)
                     c.execute("DELETE FROM guildsInfo WHERE guildID=?", (guild.id,))
-                    sql = "INSERT INTO reportList Values(?,?,?,?,?,?,0,?)"
+                    sql = "INSERT INTO guildsInfo Values(?,?,?,?,?,?,0,?)"
                     try:
                         c.execute(sql, (guild.id, modchannel, delchanthresh, memthresh, backups, botban, autorestore))
                     except Exception as e:
