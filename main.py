@@ -21,10 +21,11 @@ from discord.ext import tasks
 from discord_slash import SlashCommand, SlashContext
 from discord_slash.utils.manage_commands import create_permission
 from discord_slash.model import SlashCommandPermissionType
-from discord_slash.utils.manage_commands import create_option
+from discord_slash.utils.manage_commands import create_option, create_choice
 from discord_components import DiscordComponents, Button, ButtonStyle, InteractionType
 import ast
 import gzip
+
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -39,6 +40,28 @@ guildchanneltrack = {}
 sqlite_file = 'guildsettings.db'
 conn = sqlite3.connect(sqlite_file)
 c = conn.cursor()
+
+
+async def fetch_mod_channel(guildID):
+    c.execute("SELECT * FROM guildsInfo WHERE guildID=?", (guildID,))
+    row = c.fetchone()
+    modchannel = bot.get_channel(row[0])
+    if modchannel is None:
+        c.execute("DELETE FROM guildsInfo WHERE guildID=?", (row[0],))
+        return
+
+
+@tasks.loop(hours=24)
+async def dailyloop():
+    await bot.wait_until_ready()
+    c.execute("SELECT * FROM guildsInfo WHERE backups=1")
+    rows = c.fetchall()
+    for row in rows:
+        guild = bot.get_guild(row[0])
+        if guild is None:
+            c.execute("DELETE FROM guildsInfo WHERE guildID=?", (row[0],))
+            return
+        await fullserverbackup(guild)
 
 
 @tasks.loop(hours=1)
@@ -57,22 +80,52 @@ async def hourloop():
 guild_ids = []
 
 
-@bot.command()
-async def channelrestore(ctx):
-    await fullchannelrestore(ctx)
+@slash.slash(name='channelrestore', description='Restores deleted messages to the current channel', guild_ids=guild_ids, options=[
+    create_option(
+        name="days",
+        description="Number of days to restore messages, type all for every message",
+        option_type=3,
+        required=True,
+    ),
+    create_option(
+        name="id",
+        description="ID of channel to get messages from, leave blank for current channel",
+        option_type=3,
+        required=False,
+    )
+])
+async def _channelrestore(ctx, days, id=None):
+    if ctx.message.author.id != ctx.message.guild.owner.id:
+        await ctx.send("You do not have permission to use that command")
+        return
+    if days != "all":
+        try:
+            days = int(days)
+        except:
+            await ctx.send("Please enter a valid number of days or all")
+            return
+    await ctx.defer()
+    if isinstance(days, int):
+        date = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+    else:
+        date = None
+    if id is not None:
+        print("placeholder")
+    await fullchannelrestore(ctx, date)
 
 
-async def fullchannelrestore(ctx):
+async def fullchannelrestore(ctx, date):
     print("here now")
     webhooks = []
-    numwebhooks=2
+    numwebhooks = 2
     for i in range(numwebhooks):
         webhooks.append(await ctx.channel.create_webhook(name="RestoreBot " + str(i + 1)))
     x = 0
     print("acc here")
     try:
         if os.path.exists('serverbackups/' + str(ctx.guild.id) + "/" + str(ctx.channel.id) + ".gz"):
-            with gzip.open('serverbackups/' + str(ctx.guild.id) + "/" + str(ctx.channel.id) + ".gz", "rt", encoding="utf-8") as f:
+            with gzip.open('serverbackups/' + str(ctx.guild.id) + "/" + str(ctx.channel.id) + ".gz", "rt",
+                           encoding="utf-8") as f:
                 data = []
                 for line in f:
                     data.append(ast.literal_eval(line.strip()))
@@ -102,6 +155,7 @@ async def fullchannelrestore(ctx):
     print("damn alright")
 
 
+
 @bot.event
 async def on_ready():
     global guild_ids, imagechannel
@@ -115,7 +169,7 @@ async def on_ready():
 
 @bot.event
 async def on_guild_channel_delete(channel):
-    async for entry in channel.guild.audit_logs(limit=1):
+    async for entry in channel.guild.audit_logs(limit=5):
         if entry.action == discord.AuditLogAction.channel_delete:
             if str(entry.user.id) in userdict:
                 if 'delchannel' not in userdict[str(entry.user.id)]:
@@ -124,24 +178,35 @@ async def on_guild_channel_delete(channel):
                 userdict[str(entry.user.id)] = {'delchannel': 0}
             userdict[str(entry.user.id)]['delchannel'] += 1
             userdict[str(entry.user.id)]['delchanneltime'] = datetime.datetime.utcnow()
+
+            if (modchannel := await fetch_mod_channel(channel.guild.id)) is None: return
+
             c.execute("SELECT * FROM guildsInfo WHERE guildID=?", (channel.guild.id,))
             row = c.fetchone()
-            modchannel = row[1]
+
             if modchannel == channel.id:
-                await channel.guild.text_channels[0].send("Mod channel was deleted, to ensure functionality, the mod channel has been reset to this channel")
+                await channel.guild.text_channels[0].send(
+                    "Mod channel was deleted, to ensure functionality, the mod channel has been reset to this channel")
                 modchannel = channel.guild.text_channels[0].id
                 c.execute("UPDATE guildsInfo SET modchannel=? WHERE guildID=?", (modchannel, channel.guild.id))
+                conn.commit()
             modchannel = bot.get_channel(modchannel)
-            await modchannel.send("<@!" + str(channel.guild.owner.id) + "> " + channel.name + " - " + str(channel.id) + " was deleted by " + str(entry.user) + " - " + str(entry.user.id))
+            await modchannel.send("<@!" + str(channel.guild.owner.id) + "> " + channel.name + " - " + str(
+                channel.id) + " was deleted by " + str(entry.user) + " - " + str(entry.user.id))
             if userdict[str(entry.user.id)]['delchannel'] >= row[2]:
                 await entry.user.edit(roles=[])
                 await modchannel.send("Removed the perms of " + str(entry.user) + " for channel deletion")
+            if str(channel.guild.id) not in guildchanneltrack:
+                guildchanneltrack[str(channel.guild.id)] = [[str(channel.id), channel.name]]
+            else:
+                guildchanneltrack[str(channel.guild.id)].append([str(channel.id), channel.name])
+            return
 
 
 @bot.event
 async def on_member_remove(member):
     print("removed")
-    async for entry in member.guild.audit_logs(limit=1):
+    async for entry in member.guild.audit_logs(limit=5):
         if entry.action == discord.AuditLogAction.kick or entry.action == discord.AuditLogAction.ban:
             if str(entry.user.id) in userdict:
                 if 'delmember' not in userdict[str(entry.user.id)]:
@@ -154,10 +219,23 @@ async def on_member_remove(member):
             row = c.fetchone()
             if userdict[str(entry.user.id)]['delmember'] >= row[3]:
                 await entry.user.edit(roles=[])
+            return
         elif entry.action == discord.AuditLogAction.member_prune:
             if entry.user != member.guild.owner:
                 await entry.user.edit(roles=[])
-                break
+            return
+
+
+@bot.command()
+async def helprestore(ctx):
+    if str(ctx.guild.id) not in guildchanneltrack:
+        await ctx.send("No channels have been deleted")
+        return
+    tosend = ""
+    for channel in guildchanneltrack[str(ctx.guild.id)]:
+        tosend += channel[1] + " - ID: " + channel[0] + "\n"
+    await ctx.send(
+        "Deleted channels:\n" + tosend + "To restore a deleted channel go to its replacement and run /channelrestore id to re-populate with messages")
 
 
 @bot.event
@@ -312,7 +390,8 @@ async def serverbackup(ctx):
     await ctx.send("Finished at " + str(datetime.datetime.utcnow()))
 
 
-@slash.slash(name='setmodchannel', description='Sets the mod channel for bot actions to the current channel')
+@slash.slash(name='setmodchannel', description='Sets the mod channel for bot actions to the current channel',
+             guild_ids=guild_ids)
 async def _setmodchannel(ctx):
     if not ctx.author.guild_permissions.administrator:
         await ctx.send("You do not have the permissions to use that command", hidden=True)
@@ -422,6 +501,7 @@ async def on_button_click(interaction):
                         print("major error, kill")
                     conn.commit()
                     await message.edit(embed=newEmbed, components=[])
+                    await fullserverbackup(guild)
                 else:
                     await interaction.respond(content="Please enter the mod channel before submitting")
             elif interaction.component.id == '#️⃣':
@@ -509,5 +589,6 @@ async def on_button_click(interaction):
             return
 
 
+dailyloop.start()
 hourloop.start()
 bot.run(TOKEN)
