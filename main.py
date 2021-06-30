@@ -26,7 +26,6 @@ from discord_components import DiscordComponents, Button, ButtonStyle, Interacti
 import ast
 import gzip
 
-
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
@@ -80,20 +79,21 @@ async def hourloop():
 guild_ids = []
 
 
-@slash.slash(name='channelrestore', description='Restores deleted messages to the current channel', guild_ids=guild_ids, options=[
-    create_option(
-        name="days",
-        description="Number of days to restore messages, type all for every message",
-        option_type=3,
-        required=True,
-    ),
-    create_option(
-        name="id",
-        description="ID of channel to get messages from, leave blank for current channel",
-        option_type=3,
-        required=False,
-    )
-])
+@slash.slash(name='channelrestore', description='Restores deleted messages to the current channel', guild_ids=guild_ids,
+             options=[
+                 create_option(
+                     name="days",
+                     description="Number of days to restore messages, type all for every message",
+                     option_type=3,
+                     required=True,
+                 ),
+                 create_option(
+                     name="id",
+                     description="ID of channel to get messages from, leave blank for current channel",
+                     option_type=3,
+                     required=False,
+                 )
+             ])
 async def _channelrestore(ctx, days, id=None):
     if ctx.message.author.id != ctx.message.guild.owner.id:
         await ctx.send("You do not have permission to use that command")
@@ -116,35 +116,63 @@ async def _channelrestore(ctx, days, id=None):
 
 async def fullchannelrestore(ctx, date):
     print("here now")
+    if os.path.exists('serverbackups/' + str(ctx.guild.id) + "/" + str(ctx.channel.id) + ".gz"):
+        with gzip.open('serverbackups/' + str(ctx.guild.id) + "/" + str(ctx.channel.id) + ".gz", "rt",
+                       encoding="utf-8") as f:
+            data = []
+            for line in f:
+                data.append(ast.literal_eval(line.strip()))
+    data.reverse()
+    i = 0
+    for message in data:
+        if datetime.datetime.strptime(message['time'], '%Y-%m-%d %X.%f') >= date:
+            i += 1
+        else:
+            data = data[:i]
+            break
+    data.reverse()
+    ctx.send("This process will take " + str(int(len(data) / 300)) + "minutes, are you sure you want to continue?\nTo "
+                                                                     "reduce time required re-enter the command with "
+                                                                     "a lower number of days for the bot to restore")
+    def check(m):
+        return m.author.id == ctx.author.id and m.channel == ctx.channel
+
+
+    def check4(m):
+        if m.content.lower().startswith("y") or m.content.lower().startswith("n"):
+            return check(m)
+
+    try:
+        msg = await bot.wait_for("message", check=check4, timeout=120)
+    except:
+        return
+    if msg.content.lower().startswith("y"):
+        yesno = "yes"
+    else:
+        yesno = "no"
+
     webhooks = []
-    numwebhooks = 2
+    numwebhooks = 10
     for i in range(numwebhooks):
         webhooks.append(await ctx.channel.create_webhook(name="RestoreBot " + str(i + 1)))
     x = 0
     print("acc here")
     try:
-        if os.path.exists('serverbackups/' + str(ctx.guild.id) + "/" + str(ctx.channel.id) + ".gz"):
-            with gzip.open('serverbackups/' + str(ctx.guild.id) + "/" + str(ctx.channel.id) + ".gz", "rt",
-                           encoding="utf-8") as f:
-                data = []
-                for line in f:
-                    data.append(ast.literal_eval(line.strip()))
-                print(data)
-            for message in data:
-                if message['attachments'] == '' and message['content'] == '':
-                    continue
-                embed = message['embed']
-                if embed == '':
-                    embed = None
-                avatar = message['pfp']
-                if avatar == '':
-                    avatar = None
-                attachment = "\n" + message['attachments']
-                await webhooks[x].send(content=message['content'] + attachment, username=message['name'],
-                                       avatar_url=avatar, embed=embed)
-                x += 1
-                if x == numwebhooks:
-                    x = 0
+        for message in data:
+            if message['attachments'] == '' and message['content'] == '':
+                continue
+            embed = message['embed']
+            if embed == '':
+                embed = None
+            avatar = message['pfp']
+            if avatar == '':
+                avatar = None
+            attachment = "\n" + message['attachments']
+            await webhooks[x].send(content=message['content'] + attachment, username=message['name'],
+                                   avatar_url=avatar, embed=embed)
+            x += 1
+            if x == numwebhooks:
+                x = 0
     except Exception as e:
         print(e)
         for webhook in webhooks:
@@ -152,8 +180,7 @@ async def fullchannelrestore(ctx, date):
         return
     for webhook in webhooks:
         await webhook.delete()
-    print("damn alright")
-
+    print("damn 2")
 
 
 @bot.event
