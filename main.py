@@ -3,8 +3,6 @@ import os
 from dotenv import load_dotenv
 from discord.ext import commands
 import re
-from difflib import get_close_matches
-from unidecode import unidecode
 import sqlite3
 import datetime
 import shortuuid as shortuuid
@@ -44,7 +42,7 @@ c = conn.cursor()
 async def fetch_mod_channel(guildID):
     c.execute("SELECT * FROM guildsInfo WHERE guildID=?", (guildID,))
     row = c.fetchone()
-    modchannel = bot.get_channel(row[0])
+    modchannel = bot.get_channel(row[1])
     if modchannel is None:
         c.execute("DELETE FROM guildsInfo WHERE guildID=?", (row[0],))
         return
@@ -95,7 +93,7 @@ guild_ids = []
                  )
              ])
 async def _channelrestore(ctx, days, id=None):
-    if ctx.message.author.id != ctx.message.guild.owner.id:
+    if ctx.author.id != ctx.guild.owner.id:
         await ctx.send("You do not have permission to use that command")
         return
     if days != "all":
@@ -104,20 +102,27 @@ async def _channelrestore(ctx, days, id=None):
         except:
             await ctx.send("Please enter a valid number of days or all")
             return
+    if id is None:
+        channel = ctx.channel
+    else:
+        channel = bot.get_channel(id)
+        if channel is None:
+            await ctx.send("Invalid channel ID")
+            return
     await ctx.defer()
     if isinstance(days, int):
         date = datetime.datetime.utcnow() - datetime.timedelta(days=days)
     else:
         date = None
-    if id is not None:
-        print("placeholder")
-    await fullchannelrestore(ctx, date)
+    await fullchannelrestore(ctx, ctx.guild, date, channel)
 
 
-async def fullchannelrestore(ctx, date):
+async def fullchannelrestore(ctx=None, guild=None, date=None, channel=None, auto=False, channeltosend=None):
+    if channeltosend is None:
+        channeltosend = ctx.channel
     print("here now")
-    if os.path.exists('serverbackups/' + str(ctx.guild.id) + "/" + str(ctx.channel.id) + ".gz"):
-        with gzip.open('serverbackups/' + str(ctx.guild.id) + "/" + str(ctx.channel.id) + ".gz", "rt",
+    if os.path.exists('serverbackups/' + str(guild.id) + "/" + str(channel.id) + ".gz"):
+        with gzip.open('serverbackups/' + str(guild.id) + "/" + str(channel.id) + ".gz", "rt",
                        encoding="utf-8") as f:
             data = []
             for line in f:
@@ -131,32 +136,49 @@ async def fullchannelrestore(ctx, date):
             data = data[:i]
             break
     data.reverse()
-    ctx.send("This process will take " + str(int(len(data) / 300)) + "minutes, are you sure you want to continue?\nTo "
-                                                                     "reduce time required re-enter the command with "
-                                                                     "a lower number of days for the bot to restore")
-    def check(m):
-        return m.author.id == ctx.author.id and m.channel == ctx.channel
+    if not auto:
+        await ctx.send(
+            "This process will take " + str(int(len(data) / 300)) + "minutes, are you sure you want to continue?\nTo "
+                                                                    "reduce time required re-enter the command with "
+                                                                    "a lower number of days for the bot to restore")
 
+        def check(m):
+            return m.author.id == ctx.author.id and m.channel == ctx.channel
 
-    def check4(m):
-        if m.content.lower().startswith("y") or m.content.lower().startswith("n"):
-            return check(m)
+        def check4(m):
+            if m.content.lower().startswith("y") or m.content.lower().startswith("n"):
+                return check(m)
 
-    try:
-        msg = await bot.wait_for("message", check=check4, timeout=120)
-    except:
-        return
-    if msg.content.lower().startswith("y"):
-        yesno = "yes"
-    else:
-        yesno = "no"
+        try:
+            msg = await bot.wait_for("message", check=check4, timeout=120)
+        except:
+            return
+
+        if not msg.content.lower().startswith("y"):
+            return
 
     webhooks = []
     numwebhooks = 10
     for i in range(numwebhooks):
-        webhooks.append(await ctx.channel.create_webhook(name="RestoreBot " + str(i + 1)))
+        webhooks.append(await channeltosend.create_webhook(name="RestoreBot " + str(i + 1)))
     x = 0
     print("acc here")
+    i = 0
+    secondlist = []
+    for message in data:
+        if i != 0:
+            if secondlist[-1]['name'] == message['name']:
+                if message['attachments']:
+                    if message['content']!='':
+                        secondlist[-1]['content'] += "\n" + message['content'] + "\n" + message['attachments']
+                    else:
+                        secondlist[-1]['content'] += "\n" + message['attachments']
+                else:
+                    secondlist[-1]['content'] += "\n" + message['content']
+                continue
+        secondlist.append(message)
+        i += 1
+    data = secondlist
     try:
         for message in data:
             if message['attachments'] == '' and message['content'] == '':
@@ -196,6 +218,7 @@ async def on_ready():
 
 @bot.event
 async def on_guild_channel_delete(channel):
+    print("detected")
     async for entry in channel.guild.audit_logs(limit=5):
         if entry.action == discord.AuditLogAction.channel_delete:
             if str(entry.user.id) in userdict:
@@ -206,10 +229,25 @@ async def on_guild_channel_delete(channel):
             userdict[str(entry.user.id)]['delchannel'] += 1
             userdict[str(entry.user.id)]['delchanneltime'] = datetime.datetime.utcnow()
 
-            if (modchannel := await fetch_mod_channel(channel.guild.id)) is None: return
+            if (modchannel := await fetch_mod_channel(channel.guild.id)) is None: print("ok")
 
             c.execute("SELECT * FROM guildsInfo WHERE guildID=?", (channel.guild.id,))
             row = c.fetchone()
+            modchannel = row[1]
+            if row[7] == 1:
+                newchannel = await channel.guild.create_text_channel(name=channel.name, overwrites=channel.overwrites,
+                                                                     category=channel.category,
+                                                                     position=channel.position,
+                                                                     topic=channel.topic,
+                                                                     slowmode_delay=channel.slowmode_delay,
+                                                                     nsfw=channel.is_nsfw(), reason="Auto Restoration")
+                if modchannel == channel.id:
+                    modchannel = newchannel.id
+                    c.execute("UPDATE guildsInfo SET modchannel=? WHERE guildID=?", (modchannel, channel.guild.id))
+                    conn.commit()
+                await fullchannelrestore(guild=channel.guild,
+                                         date=datetime.datetime.utcnow() - datetime.timedelta(days=7), channel=channel,
+                                         auto=True, channeltosend=newchannel)
 
             if modchannel == channel.id:
                 await channel.guild.text_channels[0].send(
@@ -349,8 +387,11 @@ async def fullserverbackup(guild):
                 data = []
                 for line in f:
                     data.append(ast.literal_eval(line.strip()))
-                lmsg = data[-1]
-                date = lmsg['time']
+                try:
+                    lmsg = data[-1]
+                    date = lmsg['time']
+                except:
+                    date = "2015-06-24 09:33:34.687000"
                 async for message in channel.history(oldest_first=True,
                                                      after=datetime.datetime.strptime(date, '%Y-%m-%d %X.%f'),
                                                      limit=9999999999):
@@ -363,7 +404,9 @@ async def fullserverbackup(guild):
                     except Exception:
                         pass
                     if message.embeds:
-                        embed = message.embeds[0].to_dict
+                        embed = message.embeds[0].to_dict()
+                        if not isinstance(embed, dict):
+                            continue
 
                     for attachment in message.attachments:
                         tosend += attachment.proxy_url
@@ -386,6 +429,8 @@ async def fullserverbackup(guild):
                     pass
                 if message.embeds:
                     embed = message.embeds[0].to_dict()
+                    if not isinstance(embed, dict):
+                        continue
                 '''for attachment in message.attachments:
                     await attachment.save(attachment.filename)
                     msg2 = await imagechannel.send(file=discord.File(attachment.filename))
@@ -405,6 +450,7 @@ async def fullserverbackup(guild):
                            encoding="utf-8") as f:
                 print("wrote")
                 f.write('\n'.join(str(line) for line in towrite))
+    print("backup done")
 
 
 # @slash.slash(name='serverbackup', description='performs backup of the server', guild_ids=guild_ids)
@@ -427,7 +473,7 @@ async def _setmodchannel(ctx):
     c.execute("SELECT * FROM guildsInfo WHERE guildID=?", (ctx.guild.id,))
     row = c.fetchone()
     if row is None:
-        c.execute("INSERT INTO guildsInfo Values(NULL,NULL,999,999,0,0,1)", (ctx.guild.id,))
+        c.execute("INSERT INTO guildsInfo Values(?,NULL,999,999,0,0,1,0)", (ctx.guild.id,))
         conn.commit()
     c.execute("UPDATE guildsInfo SET modchannel=? WHERE guildID=?", (ctx.channel.id, ctx.guild.id))
     conn.commit()
@@ -440,7 +486,7 @@ async def on_guild_join(guild):
     c.execute("SELECT * FROM guildsInfo WHERE guildID=?", (guild.id,))
     row = c.fetchone()
     if row is None:
-        c.execute("INSERT INTO guildsInfo Values(?,NULL,999,999,NULLL,NULL,1,NULL)", (guild.id,))
+        c.execute("INSERT INTO guildsInfo Values(?,NULL,999,999,NULL,NULL,1,NULL)", (guild.id,))
         conn.commit()
 
 
@@ -468,6 +514,7 @@ async def on_button_click(interaction):
         return check(m) and 0 < int(m.content) < 100000
 
     def check3(m):
+        print(m.content)
         m2 = m.content.replace("<#", "")
         m2 = m2.replace(">", "")
 
@@ -514,7 +561,7 @@ async def on_button_click(interaction):
                         botban = 1
                     else:
                         botban = 0
-                    if autorestore == "autorestore":
+                    if autorestore == "yes":
                         autorestore = 1
                     else:
                         autorestore = 0
@@ -574,7 +621,7 @@ async def on_button_click(interaction):
                 else:
                     yesno = "no"
                 newEmbed = discord.Embed.from_dict(embed_dict)
-                newEmbed.set_field_at(3, name='🗂️ Backups', value=yesno, inline=False)
+                newEmbed.set_field_at(4, name='🗂️ Backups', value=yesno, inline=False)
                 await msg.delete()
                 await message.edit(embed=newEmbed)
             elif interaction.component.id == '🤖':
