@@ -559,8 +559,8 @@ async def fullserverbackup(guild):
                 categoryid = None
             f.write(str([channel.name, channel.overwrites, categoryid, channel.position, channel.topic,
                          channel.slowmode_delay, channel.is_nsfw()]))
-    with open('serverbackups/' + str(guild.id) + "/" + "other .txt", "w", encoding="utf-8") as f:
-        details = literal_eval(f.read())
+    '''with open('serverbackups/' + str(guild.id) + "/" + "other .txt", "w", encoding="utf-8") as f:
+        details = literal_eval(f.read())'''
     print("backup done")
 
 
@@ -732,8 +732,13 @@ async def on_button_click(interaction):
         print(m.content)
         m2 = m.content.replace("<#", "")
         m2 = m2.replace(">", "")
-
-        x = bot.get_channel(int(m2))
+        print(m2)
+        try:
+            m2 = int(m2)
+        except:
+            return False
+        x = guild.get_channel(m2)
+        print(x)
         if x is None:
             return False
         return check(m)
@@ -789,7 +794,8 @@ async def on_button_click(interaction):
                     sql = "INSERT INTO guildsInfo Values(?,?,?,?,?,?,0,?,?)"
                     try:
                         c.execute(sql, (
-                        guild.id, modchannel, delchanthresh, memthresh, backups, botban, autorestore, guild.owner.id))
+                            guild.id, modchannel, delchanthresh, memthresh, backups, botban, autorestore,
+                            guild.owner.id))
                     except Exception as e:
                         print(e)
                         print("major error, kill")
@@ -824,7 +830,7 @@ async def on_button_click(interaction):
                     return
                 embed_dict['color'] = 0xf1c40f
                 newEmbed = discord.Embed.from_dict(embed_dict)
-                newEmbed.set_field_at(0, name='#️⃣ Mod channel', value=msg.content, inline=False)
+                newEmbed.set_field_at(0, name='#️⃣ Mod channel', value=msg.content, inline=True)
                 await msg.delete()
                 await message.edit(embed=newEmbed)
             elif interaction.component.id == '🛠️':
