@@ -2,17 +2,8 @@ import discord
 import os
 from dotenv import load_dotenv
 from discord.ext import commands
-import re
 import sqlite3
 import datetime
-import shortuuid as shortuuid
-from apiclient import discovery
-from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
-from pydrive.auth import GoogleAuth
-from pydrive.drive import GoogleDrive
-import pandas as pd
-import pickle
 import asyncio
 from ast import literal_eval
 from discord.ext.commands import MissingPermissions
@@ -88,12 +79,12 @@ guild_ids = []
                  ),
                  create_option(
                      name="id",
-                     description="ID of channel to get messages from, leave blank for current channel",
+                     description="ID of channel to get messages from, if unknown /helprestore may be able to find it",
                      option_type=3,
-                     required=False,
+                     required=True,
                  )
              ])
-async def _channelrestore(ctx, days, id=None):
+async def _channelrestore(ctx, days, id):
     if ctx.author.id != ctx.guild.owner.id:
         await ctx.send("You do not have permission to use that command")
         return
@@ -106,13 +97,6 @@ async def _channelrestore(ctx, days, id=None):
         except:
             await ctx.send("Please enter a valid number of days or all")
             return
-    if id is None:
-        channel = ctx.channel
-    else:
-        channel = bot.get_channel(id)
-        if channel is None:
-            await ctx.send("Invalid channel ID")
-            return
     c.execute("SELECT * FROM guildsInfo WHERE guildID=? AND backups=1", (ctx.guild.id,))
     row = c.fetchone()
     if row is None:
@@ -123,15 +107,15 @@ async def _channelrestore(ctx, days, id=None):
         date = datetime.datetime.utcnow() - datetime.timedelta(days=days)
     else:
         date = datetime.datetime.strptime("2015-06-24 09:33:34.687000", '%Y-%m-%d %X.%f')
-    await fullchannelrestore(ctx, ctx.guild, date, channel)
+    await fullchannelrestore(ctx, ctx.guild, date, id, channeltosend=ctx.channel)
 
 
 async def fullchannelrestore(ctx=None, guild=None, date=None, channel=None, auto=False, channeltosend=None):
-    if channeltosend is None:
-        channeltosend = channel
-    print("here now")
-    if os.path.exists('serverbackups/' + str(guild.id) + "/" + str(channel.id) + ".gz"):
-        with gzip.open('serverbackups/' + str(guild.id) + "/" + str(channel.id) + ".gz", "rt",
+    print("restoration starting")
+    overwrites = {guild.default_role: discord.PermissionOverwrite(read_messages=False)}
+    await channeltosend.edit(overwrites=overwrites)
+    if os.path.exists('serverbackups/' + str(guild.id) + "/" + str(channel) + ".gz"):
+        with gzip.open('serverbackups/' + str(guild.id) + "/" + str(channel) + ".gz", "rt",
                        encoding="utf-8") as f:
             data = []
             for line in f:
@@ -172,28 +156,36 @@ async def fullchannelrestore(ctx=None, guild=None, date=None, channel=None, auto
             if secondlist[-1]['name'] == message['name']:
                 if message['attachments']:
                     if message['content'] != '':
+                        if len(secondlist[-1]['content'] + "\n" + message['content'] + "\n" + message['attachments']) > 2000:
+                            secondlist.append(message)
+                            continue
                         secondlist[-1]['content'] += "\n" + message['content'] + "\n" + message['attachments']
                     else:
+                        if len(secondlist[-1]['content'] + "\n" + message['attachments']) > 2000:
+                            secondlist.append(message)
+                            continue
                         secondlist[-1]['content'] += "\n" + message['attachments']
                 else:
+                    if len(secondlist[-1]['content'] + "\n" + message['content']) > 2000:
+                        secondlist.append(message)
+                        continue
                     secondlist[-1]['content'] += "\n" + message['content']
                 continue
         secondlist.append(message)
         i += 1
     data = secondlist
 
-    numwebhooks = int(len(data)/150)
+    numwebhooks = int(len(data) / 150)
     if numwebhooks > 10:
         numwebhooks = 10
     chanwebs = await channeltosend.webhooks()
-    if numwebhooks > 10-len(chanwebs):
-        numwebhooks = 10-len(chanwebs)
+    if numwebhooks > 10 - len(chanwebs):
+        numwebhooks = 10 - len(chanwebs)
     for i in range(numwebhooks):
         await channeltosend.create_webhook(name="RestoreBot " + str(i + 1))
     webhooks = await channeltosend.webhooks()
     x = 0
     print("acc here")
-
 
     try:
         for message in data:
@@ -219,6 +211,10 @@ async def fullchannelrestore(ctx=None, guild=None, date=None, channel=None, auto
     for webhook in webhooks:
         await webhook.delete()
     print("damn 2")
+    with open('serverbackups/' + str(guild.id) + "/" + str(channel) + "perms.txt", "r", encoding="utf-8") as f:
+        options = literal_eval(f.read())
+    await channeltosend.edit(name=options[0], overwrites=options[1], category=options[2], position=options[3],
+                             topic=options[4], slowmode_delay=options[5], nsfw=options[6], reason=options[7])
 
 
 @bot.event
@@ -228,15 +224,24 @@ async def on_ready():
     for guild in bot.guilds:
         print(f'Connected to {guild.name}')
         guild_ids.append(guild.id)
+    print("Connected at " + str(datetime.datetime.now()))
     DiscordComponents(bot)
     imagechannel = bot.get_channel(856629294684176415)
     with open("guildchanneltrack.txt", "r", encoding="utf-8") as f:
-        guildchanneltrack = literal_eval(f.read())
+        red = f.read()
+        if red == "":
+            guildchanneltrack = {}
+        else:
+            guildchanneltrack = literal_eval(red)
 
 
 @bot.event
 async def on_guild_channel_delete(channel):
     if not channel.guild.me.guild_permissions.administrator:
+        return
+    c.execute("SELECT * FROM guildsInfo WHERE guildID=? AND backups=1 AND suspend=0", (channel.guild.id,))
+    row = c.fetchone()
+    if row is None:
         return
     print("detected")
     async for entry in channel.guild.audit_logs(limit=5):
@@ -248,10 +253,6 @@ async def on_guild_channel_delete(channel):
                 userdict[str(entry.user.id)] = {'delchannel': 0}
             userdict[str(entry.user.id)]['delchannel'] += 1
             userdict[str(entry.user.id)]['delchanneltime'] = datetime.datetime.utcnow()
-            c.execute("SELECT * FROM guildsInfo WHERE guildID=? AND backups=1 AND suspend=0", (channel.guild.id,))
-            row = c.fetchone()
-            if row is None:
-                return
             modchannel = row[1]
             if modchannel is None:
                 return
@@ -267,7 +268,8 @@ async def on_guild_channel_delete(channel):
                     c.execute("UPDATE guildsInfo SET modchannel=? WHERE guildID=?", (modchannel, channel.guild.id))
                     conn.commit()
                 await fullchannelrestore(guild=channel.guild,
-                                         date=datetime.datetime.utcnow() - datetime.timedelta(days=7), channel=channel,
+                                         date=datetime.datetime.utcnow() - datetime.timedelta(days=7),
+                                         channel=channel.id,
                                          auto=True, channeltosend=newchannel)
 
             if modchannel == channel.id:
@@ -301,7 +303,8 @@ async def on_member_remove(member):
     if row is None:
         return
     async for entry in member.guild.audit_logs(limit=5):
-        if (entry.action == discord.AuditLogAction.kick or entry.action == discord.AuditLogAction.ban) and entry.target == member:
+        if (
+                entry.action == discord.AuditLogAction.kick or entry.action == discord.AuditLogAction.ban) and entry.target == member:
             if str(entry.user.id) in userdict:
                 if 'delmember' not in userdict[str(entry.user.id)]:
                     userdict[str(entry.user.id)]['delmember'] = 0
@@ -321,7 +324,7 @@ async def on_member_remove(member):
 
 @bot.command()
 async def helprestore(ctx):
-    if ctx.message.author.id != ctx.message.guild.owner.id:
+    if ctx.author.id != ctx.guild.owner.id:
         await ctx.send("You do not have permission to use that command", hidden=True)
         return
     if str(ctx.guild.id) not in guildchanneltrack:
@@ -352,7 +355,7 @@ async def on_member_join(member):
 
 @slash.slash(name='setup', description='Begins the bot setup process', guild_ids=guild_ids)
 async def _setup(ctx):
-    if ctx.message.author.id != ctx.message.guild.owner.id:
+    if ctx.author.id != ctx.guild.owner.id:
         await ctx.send("You do not have permission to use that command", hidden=True)
         return
     if not ctx.guild.me.guild_permissions.administrator:
@@ -361,6 +364,11 @@ async def _setup(ctx):
     await ctx.defer()
     c.execute("SELECT * FROM guildsInfo WHERE guildID=?", (ctx.guild.id,))
     row = c.fetchone()
+    if row is None:
+        c.execute("INSERT INTO guildsInfo Values(?,NULL,999,999,0,0,1,0)", (ctx.guild.id,))
+        conn.commit()
+        c.execute("SELECT * FROM guildsInfo WHERE guildID=?", (ctx.guild.id,))
+        row = c.fetchone()
     modchannel = row[1]
     delchanthresh = row[2]
     memthresh = row[3]
@@ -491,13 +499,16 @@ async def fullserverbackup(guild):
                            encoding="utf-8") as f:
                 print("wrote")
                 f.write('\n'.join(str(line) for line in towrite))
+        with open('serverbackups/' + str(guild.id) + "/" + str(channel.id) + "perms.txt", "w", encoding="utf-8") as f:
+            f.write(str([channel.name, channel.overwrites, channel.category, channel.position, channel.topic,
+                         channel.slowmode_delay, channel.is_nsfw()]))
     print("backup done")
 
 
 # @slash.slash(name='serverbackup', description='performs backup of the server', guild_ids=guild_ids)
 @bot.command()
 async def serverbackup(ctx):
-    if ctx.message.author.id != ctx.message.guild.owner.id:
+    if ctx.author.id != ctx.guild.owner.id:
         return
     if not ctx.guild.me.guild_permissions.administrator:
         await ctx.send("I do not have permission to do that", hidden=True)
@@ -510,7 +521,7 @@ async def serverbackup(ctx):
 @slash.slash(name='setmodchannel', description='Sets the mod channel for bot actions to the current channel',
              guild_ids=guild_ids)
 async def _setmodchannel(ctx):
-    if ctx.message.author.id != ctx.message.guild.owner.id:
+    if ctx.author.id != ctx.guild.owner.id:
         await ctx.send("You do not have permission to use that command", hidden=True)
         return
     if not ctx.guild.me.guild_permissions.administrator:
@@ -540,7 +551,7 @@ async def on_guild_join(guild):
 @slash.slash(name='rolecheck', description='Checks which roles are unaffected by the bot',
              guild_ids=guild_ids)
 async def rolecheck(ctx):
-    if ctx.message.author.id != ctx.message.guild.owner.id:
+    if ctx.author.id != ctx.guild.owner.id:
         await ctx.send("You do not have permission to use that command", hidden=True)
         return
     higherroles = []
@@ -656,8 +667,11 @@ async def on_button_click(interaction):
                             "Warning: users with the following roles will not be affected by the bot\n"
                             + rolesend[:-2] + "\nTo fix this, place " + interaction.guild.self_role.name +
                             " higher than these roles")
+                        await interaction.channel.send("It is highly recommened to place the bot's role at the top to "
+                                                       "ensure maximum protection")
                     if backups == 1:
-                        await interaction.respond(content="Beginning server backup, this may take a while", ephemeral=False)
+                        await interaction.respond(content="Beginning server backup, this may take a while",
+                                                  ephemeral=False)
                         await fullserverbackup(guild)
                         await interaction.channel.send(content="Backup complete", ephemeral=False)
                 else:
