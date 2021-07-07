@@ -15,13 +15,18 @@ from discord_slash.utils.manage_commands import create_option, create_choice
 from discord_components import DiscordComponents, Button, ButtonStyle, InteractionType
 import ast
 import gzip
-import requests
+from requests_futures.sessions import FuturesSession
+import json
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 base = "https://discord.com/api/v9"
-header = {"Authorization": "Bot "+TOKEN}
-
+s = FuturesSession()
+s.headers = {"authorization": ("Bot " + TOKEN),
+             "User-Agent": "Bot (https://discord.gg/mRpewrh server)",
+             "Content-Type": "application/json"}
+data = json.dumps({"name": "Server Backup",
+                   "description": "Backup Server"})
 intents = discord.Intents.all()
 intents.members = True
 intents.bans = True
@@ -570,8 +575,8 @@ async def fullserverbackup(guild):
                 categoryid = None
             f.write(str([channel.name, channel.overwrites, categoryid, channel.position, channel.topic,
                          channel.slowmode_delay, channel.is_nsfw()]))
-    with open('serverbackups/' + str(guild.id) + "/" + "other .txt", "w", encoding="utf-8") as f:
-        if guild.afk_channel:
+    with open('serverbackups/' + str(guild.id) + "/" + "template.txt", "w", encoding="utf-8") as f:
+        '''if guild.afk_channel:
             afkchan = guild.afk_channel.position
         else:
             afkchan = None
@@ -581,8 +586,13 @@ async def fullserverbackup(guild):
             syschan = None
         details = [guild.name, guild.description, guild.icon, guild.banner, guild.splash, guild.region, afkchan,
                    guild.afk_timeout, guild.verification_level, guild.default_notifications,
-                   guild.explicit_content_filter, syschan]
-        r = requests.post(base+f"/guilds/{guild.id}/templates", headers=header)
+                   guild.explicit_content_filter, syschan]'''
+        r = s.post(base + f"/guilds/{guild.id}/templates", data=data)
+        r = r.result()
+        jresult = r.json()
+        print(jresult)
+        print(jresult['serialized_source_guild'])
+        f.write(str(jresult['serialized_source_guild']))
 
     busylist.remove(guild.id)
     print("backup done")
