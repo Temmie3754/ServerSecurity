@@ -30,6 +30,7 @@ sqlite_file = 'guildsettings.db'
 conn = sqlite3.connect(sqlite_file)
 c = conn.cursor()
 backupcooldown = []
+busylist = []
 
 '''async def fetch_mod_channel(guildID):
     c.execute("SELECT * FROM guildsInfo WHERE guildID=?", (guildID,))
@@ -115,7 +116,10 @@ async def _channelrestore(ctx, days, id):
 
 async def fullchannelrestore(ctx=None, guild=None, date=None, channel=None, auto=False, guildid=None,
                              channeltosend=None):
+    if guild.id in busylist:
+        return
     print("restoration starting")
+    busylist.append(guild.id)
     if guildid is None:
         guildid = guild.id
     overwrites = {guild.default_role: discord.PermissionOverwrite(read_messages=False)}
@@ -224,6 +228,7 @@ async def fullchannelrestore(ctx=None, guild=None, date=None, channel=None, auto
     category = bot.get_channel(options[2])
     await channeltosend.edit(name=options[0], overwrites=options[1], category=category, position=options[3],
                              topic=options[4], slowmode_delay=options[5], nsfw=options[6], reason="Channel Restoration")
+    busylist.remove(guil.id)
 
 
 @bot.event
@@ -453,6 +458,9 @@ async def _setup(ctx):
 async def fullserverbackup(guild):
     if not guild.me.guild_permissions.administrator:
         return
+    if guild.id in busylist:
+        return
+    busylist.append(guild.id)
     if not os.path.exists('serverbackups/' + str(guild.id)):
         os.mkdir('serverbackups/' + str(guild.id))
     for channel in guild.text_channels:
@@ -561,6 +569,7 @@ async def fullserverbackup(guild):
                          channel.slowmode_delay, channel.is_nsfw()]))
     '''with open('serverbackups/' + str(guild.id) + "/" + "other .txt", "w", encoding="utf-8") as f:
         details = literal_eval(f.read())'''
+    busylist.remove(guild.id)
     print("backup done")
 
 
