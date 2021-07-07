@@ -15,9 +15,12 @@ from discord_slash.utils.manage_commands import create_option, create_choice
 from discord_components import DiscordComponents, Button, ButtonStyle, InteractionType
 import ast
 import gzip
+import requests
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
+base = "https://discord.com/api/v9"
+header = {"Authorization": "Bot "+TOKEN}
 
 intents = discord.Intents.all()
 intents.members = True
@@ -228,7 +231,7 @@ async def fullchannelrestore(ctx=None, guild=None, date=None, channel=None, auto
     category = bot.get_channel(options[2])
     await channeltosend.edit(name=options[0], overwrites=options[1], category=category, position=options[3],
                              topic=options[4], slowmode_delay=options[5], nsfw=options[6], reason="Channel Restoration")
-    busylist.remove(guil.id)
+    busylist.remove(guild.id)
 
 
 @bot.event
@@ -567,8 +570,20 @@ async def fullserverbackup(guild):
                 categoryid = None
             f.write(str([channel.name, channel.overwrites, categoryid, channel.position, channel.topic,
                          channel.slowmode_delay, channel.is_nsfw()]))
-    '''with open('serverbackups/' + str(guild.id) + "/" + "other .txt", "w", encoding="utf-8") as f:
-        details = literal_eval(f.read())'''
+    with open('serverbackups/' + str(guild.id) + "/" + "other .txt", "w", encoding="utf-8") as f:
+        if guild.afk_channel:
+            afkchan = guild.afk_channel.position
+        else:
+            afkchan = None
+        if guild.system_channel:
+            syschan = guild.system_channel.position
+        else:
+            syschan = None
+        details = [guild.name, guild.description, guild.icon, guild.banner, guild.splash, guild.region, afkchan,
+                   guild.afk_timeout, guild.verification_level, guild.default_notifications,
+                   guild.explicit_content_filter, syschan]
+        r = requests.post(base+f"/guilds/{guild.id}/templates", headers=header)
+
     busylist.remove(guild.id)
     print("backup done")
 
