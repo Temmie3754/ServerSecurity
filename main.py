@@ -239,6 +239,44 @@ async def fullchannelrestore(ctx=None, guild=None, date=None, channel=None, auto
     busylist.remove(guild.id)
 
 
+@slash.slash(name='owners', description='Not recommended, allows inputted users to control the bot',
+             guild_ids=guild_ids,
+             options=[
+                 create_option(
+                     name="user1",
+                     description="The first user",
+                     option_type=6,
+                     required=True,
+                 ),
+                 create_option(
+                     name="user2",
+                     description="The second user",
+                     option_type=6,
+                     required=False,
+                 ),
+                 create_option(
+                     name="user3",
+                     description="The third user, only a max of 3 other users can be considered owner",
+                     option_type=6,
+                     required=False,
+                 )
+             ])
+async def _owners(ctx, user1, user2=None, user3=None):
+    if ctx.author.id != ctx.guild.owner.id:
+        await ctx.send("You do not have permission to use that command", hidden=True)
+        return
+    if not ctx.guild.me.guild_permissions.administrator:
+        await ctx.send("I do not have permission to do that", hidden=True)
+        return
+    if not isinstance(user1, int):
+        user1 = user1.id
+    if not isinstance(user2, int) and user2 is not None:
+        user2 = user2.id
+    if not isinstance(user3, int) and user3 is not None:
+        user3 = user3.id
+    owners = user1 + " " + user2 + " " + user3
+
+
 @bot.event
 async def on_ready():
     global guild_ids, imagechannel, guildchanneltrack
